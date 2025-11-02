@@ -876,7 +876,7 @@ include APP_ROOT . '/views/layouts/admin-header.php';
 <!-- Admin Layout -->
 <div class="admin-layout">
   <!-- Left Sidebar -->
-  <?include APP_ROOT . '/views/admin/admin-navbar.php' ?>;
+  <?php include APP_ROOT . '/views/admin/admin-navbar.php'; ?>
 
   <!-- Main Content -->
   <main class="main-content">
@@ -910,25 +910,25 @@ include APP_ROOT . '/views/layouts/admin-header.php';
             href="<?= BASE_URL ?>admin/borrow-requests?status=pending">
             <i class="fas fa-clock"></i>
             <span>Pending</span>
-            <span class="tab-badge warning"><?= count(array_filter($requests ?? [], fn($r) => $r['status'] === 'Pending')) ?></span>
+            <span class="tab-badge warning"><?= $statusCounts['pending'] ?? 0 ?></span>
           </a>
           <a class="tab-link <?= ($currentStatus ?? '') === 'approved' ? 'active' : '' ?>"
             href="<?= BASE_URL ?>admin/borrow-requests?status=approved">
             <i class="fas fa-check"></i>
             <span>Approved</span>
-            <span class="tab-badge success"><?= count(array_filter($requests ?? [], fn($r) => $r['status'] === 'Approved')) ?></span>
+            <span class="tab-badge success"><?= $statusCounts['approved'] ?? 0 ?></span>
           </a>
           <a class="tab-link <?= ($currentStatus ?? '') === 'rejected' ? 'active' : '' ?>"
             href="<?= BASE_URL ?>admin/borrow-requests?status=rejected">
             <i class="fas fa-times"></i>
             <span>Rejected</span>
-            <span class="tab-badge danger"><?= count(array_filter($requests ?? [], fn($r) => $r['status'] === 'Rejected')) ?></span>
+            <span class="tab-badge danger"><?= $statusCounts['rejected'] ?? 0 ?></span>
           </a>
           <a class="tab-link <?= ($currentStatus ?? '') === 'all' ? 'active' : '' ?>"
             href="<?= BASE_URL ?>admin/borrow-requests?status=all">
             <i class="fas fa-list"></i>
             <span>All</span>
-            <span class="tab-badge primary"><?= count($requests ?? []) ?></span>
+            <span class="tab-badge primary"><?= $statusCounts['all'] ?? 0 ?></span>
           </a>
         </div>
       </div>
@@ -1051,6 +1051,15 @@ include APP_ROOT . '/views/layouts/admin-header.php';
                             <i class="fas fa-eye"></i>
                           </button>
                         </div>
+                      <?php elseif ($request['status'] === 'Approved'): ?>
+                        <div class="action-buttons">
+                          <button class="btn-action success" onclick="markAsBorrowed(<?= $request['id'] ?>)">
+                            <i class="fas fa-book"></i> Mark as Borrowed
+                          </button>
+                          <button class="btn-action info" onclick="viewDetails(<?= $request['id'] ?>)">
+                            <i class="fas fa-eye"></i>
+                          </button>
+                        </div>
                       <?php elseif ($request['status'] === 'Rejected' && !empty($request['rejectionReason'])): ?>
                         <div class="action-buttons">
                           <button class="btn-action info" onclick="viewDetails(<?= $request['id'] ?>)">
@@ -1101,17 +1110,15 @@ include APP_ROOT . '/views/layouts/admin-header.php';
         <h5 class="modal-title">Approve Borrow Request</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" onclick="closeModal('approveModal')">×</button>
       </div>
-      <form method="POST" action="<?= BASE_URL ?>admin/borrow-requests-handle.php">
+      <form method="POST" action="<?= BASE_URL ?>admin/borrow-requests-handle">
         <div class="modal-body">
           <input type="hidden" name="action" value="approve">
           <input type="hidden" name="requestId" id="approveRequestId">
-
           <div class="mb-3">
             <label for="dueDate" class="form-label">Due Date</label>
             <input type="date" class="form-control" id="dueDate" name="dueDate"
               value="<?= date('Y-m-d', strtotime('+14 days')) ?>" required>
           </div>
-
           <div class="alert alert-info">
             <i class="fas fa-info-circle"></i>
             This will create a transaction record and decrease the book's available count.
@@ -1134,17 +1141,15 @@ include APP_ROOT . '/views/layouts/admin-header.php';
         <h5 class="modal-title">Reject Borrow Request</h5>
         <button type="button" class="btn-close" onclick="closeModal('rejectModal')">×</button>
       </div>
-      <form method="POST" action="<?= BASE_URL ?>admin/borrow-requests-handle.php">
+      <form method="POST" action="<?= BASE_URL ?>admin/borrow-requests-handle">
         <div class="modal-body">
           <input type="hidden" name="action" value="reject">
           <input type="hidden" name="requestId" id="rejectRequestId">
-
           <div class="mb-3">
             <label for="rejectReason" class="form-label">Rejection Reason</label>
             <textarea class="form-control" id="rejectReason" name="reason" rows="3"
               placeholder="Enter reason for rejection..."></textarea>
           </div>
-
           <div class="alert alert-warning">
             <i class="fas fa-exclamation-triangle"></i>
             The user will be notified about the rejection.
@@ -1173,6 +1178,37 @@ include APP_ROOT . '/views/layouts/admin-header.php';
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" onclick="closeModal('detailsModal')">Close</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Mark as Borrowed Modal -->
+<div class="modal" id="markBorrowedModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Mark as Borrowed</h5>
+        <button type="button" class="btn-close" onclick="closeModal('markBorrowedModal')">×</button>
+      </div>
+      <form method="POST" action="<?= BASE_URL ?>admin/borrow-requests-handle">
+        <div class="modal-body">
+          <input type="hidden" name="action" value="mark_borrowed">
+          <input type="hidden" name="requestId" id="markBorrowedRequestId">
+          <div class="mb-3">
+            <label for="borrowDate" class="form-label">Borrow Date</label>
+            <input type="date" class="form-control" id="borrowDate" name="borrowDate"
+              value="<?= date('Y-m-d') ?>" required>
+          </div>
+          <div class="alert alert-info">
+            <i class="fas fa-info-circle"></i>
+            This will record the book as borrowed and update inventory.
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" onclick="closeModal('markBorrowedModal')">Cancel</button>
+          <button type="submit" class="btn btn-success">Confirm Borrowed</button>
+        </div>
+      </form>
     </div>
   </div>
 </div>
@@ -1230,6 +1266,11 @@ include APP_ROOT . '/views/layouts/admin-header.php';
         console.error('Error:', error);
         alert('Failed to load request details');
       });
+  }
+
+  function markAsBorrowed(requestId) {
+    document.getElementById('markBorrowedRequestId').value = requestId;
+    document.getElementById('markBorrowedModal').classList.add('show');
   }
 
   function approveAllPending() {

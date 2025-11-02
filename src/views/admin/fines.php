@@ -847,7 +847,7 @@ include APP_ROOT . '/views/layouts/admin-header.php';
                     
                     <div class="settings-grid">
                         <div class="form-group">
-                            <label for="fine_per_day" class="form-label">Fine Per Day (₹)</label>
+                            <label for="fine_per_day" class="form-label">Fine Per Day (LKR)</label>
                             <input type="number" class="form-control" id="fine_per_day" name="settings[fine_per_day]" 
                                    value="<?= $fineSettings['fine_per_day'] ?? '5' ?>" min="0" step="0.01">
                         </div>
@@ -862,7 +862,7 @@ include APP_ROOT . '/views/layouts/admin-header.php';
                                    value="<?= $fineSettings['grace_period_days'] ?? '0' ?>" min="0">
                         </div>
                         <div class="form-group">
-                            <label for="max_fine_amount" class="form-label">Max Fine Amount (₹)</label>
+                            <label for="max_fine_amount" class="form-label">Max Fine Amount (LKR)</label>
                             <input type="number" class="form-control" id="max_fine_amount" name="settings[max_fine_amount]" 
                                    value="<?= $fineSettings['max_fine_amount'] ?? '500' ?>" min="0" step="0.01">
                         </div>
@@ -961,6 +961,8 @@ include APP_ROOT . '/views/layouts/admin-header.php';
                                 <th>User</th>
                                 <th>Book</th>
                                 <th>Borrow Date</th>
+                                <th>Due Date</th>
+                                <th>Days Overdue</th>
                                 <th>Fine Amount</th>
                                 <th>Status</th>
                                 <th>Payment Date</th>
@@ -969,24 +971,58 @@ include APP_ROOT . '/views/layouts/admin-header.php';
                         </thead>
                         <tbody>
                             <?php if (!empty($fines)): ?>
-                                <?php foreach ($fines as $fine): ?>
+                                <?php 
+                                // Get fine settings for calculation
+                                $maxBorrowDays = (int)($fineSettings['max_borrow_days'] ?? 14);
+                                
+                                foreach ($fines as $fine): 
+                                    // Calculate due date and days overdue
+                                    $borrowDate = new DateTime($fine['borrowDate']);
+                                    $dueDate = clone $borrowDate;
+                                    $dueDate->add(new DateInterval("P{$maxBorrowDays}D"));
+                                    
+                                    $currentDate = $fine['returnDate'] ? new DateTime($fine['returnDate']) : new DateTime();
+                                    $interval = $dueDate->diff($currentDate);
+                                    $daysOverdue = $currentDate > $dueDate ? $interval->days : 0;
+                                    
+                                    $status = $fine['fineStatus'] ?? 'pending';
+                                ?>
                                     <tr>
                                         <td><strong><?= htmlspecialchars($fine['tid']) ?></strong></td>
                                         <td>
                                             <div class="user-info-cell">
                                                 <strong><?= htmlspecialchars($fine['emailId']) ?></strong><br>
-                                                <small class="text-muted"><?= htmlspecialchars($fine['userType']) ?></small>
+                                                <small class="text-muted"><?= htmlspecialchars($fine['userType']) ?> - <?= htmlspecialchars($fine['userId']) ?></small>
                                             </div>
                                         </td>
                                         <td>
                                             <div class="book-info-cell">
-                                                <strong><?= htmlspecialchars($fine['bookName']) ?></strong><br>
-                                                <small class="text-muted"><?= htmlspecialchars($fine['authorName']) ?></small>
+                                                <strong><?= htmlspecialchars($fine['bookName'] ?? 'Unknown Book') ?></strong><br>
+                                                <small class="text-muted">ISBN: <?= htmlspecialchars($fine['isbn']) ?></small>
                                             </div>
                                         </td>
-                                        <td><?= date('M j, Y', strtotime($fine['borrowDate'])) ?></td>
+                                        <td><?= $borrowDate->format('M j, Y') ?></td>
                                         <td>
-                                            <span class="fine-amount">₹<?= number_format($fine['fineAmount'], 2) ?></span>
+                                            <span class="status-badge <?= $daysOverdue > 0 ? 'danger' : 'success' ?>">
+                                                <?= $dueDate->format('M j, Y') ?>
+                                            </span>
+                                        </td>
+                                        <td>
+                                            <?php if ($daysOverdue > 0): ?>
+                                                <span class="status-badge danger">
+                                                    <i class="fas fa-exclamation-triangle"></i>
+                                                    <?= $daysOverdue ?> days
+                                                </span>
+                                            <?php else: ?>
+                                                <span class="text-muted">-</span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td>
+                                            <?php if ($fine['fineAmount'] > 0): ?>
+                                                <span class="fine-amount">LKR<?= number_format($fine['fineAmount'], 2) ?></span>
+                                            <?php else: ?>
+                                                <span class="text-muted">LKR0.00</span>
+                                            <?php endif; ?>
                                         </td>
                                         <td>
                                             <?php
@@ -995,7 +1031,6 @@ include APP_ROOT . '/views/layouts/admin-header.php';
                                                 'paid' => 'success',
                                                 'waived' => 'info'
                                             ];
-                                            $status = $fine['fineStatus'] ?? 'pending';
                                             ?>
                                             <span class="status-badge <?= $statusClass[$status] ?? 'secondary' ?>">
                                                 <?= ucfirst($status) ?>
@@ -1004,12 +1039,15 @@ include APP_ROOT . '/views/layouts/admin-header.php';
                                         <td>
                                             <?php if ($fine['finePaymentDate']): ?>
                                                 <?= date('M j, Y', strtotime($fine['finePaymentDate'])) ?>
+                                                <?php if ($fine['finePaymentMethod']): ?>
+                                                    <br><small class="text-muted">(<?= ucfirst($fine['finePaymentMethod']) ?>)</small>
+                                                <?php endif; ?>
                                             <?php else: ?>
                                                 <span class="text-muted">-</span>
                                             <?php endif; ?>
                                         </td>
                                         <td>
-                                            <?php if ($status === 'pending'): ?>
+                                            <?php if ($status === 'pending' && $fine['fineAmount'] > 0): ?>
                                                 <div class="btn-group">
                                                     <button class="btn-action success" onclick="updateFineStatus('<?= $fine['tid'] ?>', 'paid')">
                                                         <i class="fas fa-check"></i> Mark Paid
@@ -1026,7 +1064,7 @@ include APP_ROOT . '/views/layouts/admin-header.php';
                                 <?php endforeach; ?>
                             <?php else: ?>
                                 <tr>
-                                    <td colspan="8">
+                                    <td colspan="10">
                                         <div class="empty-state">
                                             <i class="fas fa-inbox"></i>
                                             <h3>No Fines Found</h3>

@@ -732,6 +732,10 @@ $currentAdminId = $_SESSION['userId'] ?? '';
         <button class="header-btn">
           <i class="fas fa-search"></i>
         </button>
+        <a href="<?= BASE_URL ?>admin/profile" class="header-btn">
+          <i class="fas fa-user-circle"></i>
+          <span>Profile</span>
+        </a>
         <a href="<?= BASE_URL ?>logout" class="header-btn">
           <i class="fas fa-sign-out-alt"></i>
           <span>Logout</span>
@@ -826,9 +830,9 @@ $currentAdminId = $_SESSION['userId'] ?? '';
                 <div class="activity-item">
                   <div class="activity-details">
                     <div>
-                      <strong><?= htmlspecialchars($transaction['emailId']) ?></strong>
+                      <strong><?= htmlspecialchars($transaction['emailId'] ?? '') ?></strong>
                       <span style="color: #64748b;"> borrowed </span>
-                      <strong><?= htmlspecialchars($transaction['bookName']) ?></strong>
+                      <strong><?= htmlspecialchars($transaction['bookName'] ?? '') ?></strong>
                     </div>
                     <div class="activity-time">
                       <i class="fas fa-clock"></i>
@@ -868,8 +872,8 @@ $currentAdminId = $_SESSION['userId'] ?? '';
               <?php foreach (array_slice($popularBooks, 0, 5) as $book): ?>
                 <div class="book-item">
                   <div class="book-info">
-                    <strong><?= htmlspecialchars($book['bookName']) ?></strong>
-                    <div class="book-author"><?= htmlspecialchars($book['authorName']) ?></div>
+                    <strong><?= htmlspecialchars($book['bookName'] ?? '') ?></strong>
+                    <div class="book-author"><?= htmlspecialchars($book['authorName'] ?? '') ?></div>
                   </div>
                   <div class="book-count"><?= $book['borrow_count'] ?? 0 ?></div>
                 </div>

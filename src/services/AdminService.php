@@ -394,19 +394,30 @@ class AdminService
     global $conn;
 
     try {
-      $sql = "UPDATE transactions SET fineStatus = ?";
-
       if ($status === 'paid' && $paymentMethod) {
-        $sql .= ", finePaymentMethod = ?, finePaymentDate = CURDATE()";
-      }
-
-      $sql .= " WHERE tid = ?";
-
-      $stmt = $conn->prepare($sql);
-
-      if ($status === 'paid' && $paymentMethod) {
+        $sql = "UPDATE transactions 
+                SET fineStatus = ?,
+                    finePaymentMethod = ?,
+                    finePaymentDate = CURDATE(),
+                    lastFinePaymentDate = CURDATE()
+                WHERE tid = ? AND fineAmount > 0";
+        $stmt = $conn->prepare($sql);
         $stmt->bind_param("sss", $status, $paymentMethod, $transactionId);
+      } else if ($status === 'waived') {
+        $sql = "UPDATE transactions 
+                SET fineStatus = ?,
+                    fineAmount = 0,
+                    finePaymentDate = NULL,
+                    finePaymentMethod = NULL,
+                    lastFinePaymentDate = CURDATE()
+                WHERE tid = ? AND fineAmount > 0";
+        $stmt = $conn->prepare($sql);
+        $stmt->bind_param("ss", $status, $transactionId);
       } else {
+        $sql = "UPDATE transactions 
+                SET fineStatus = ?
+                WHERE tid = ? AND fineAmount > 0";
+        $stmt = $conn->prepare($sql);
         $stmt->bind_param("ss", $status, $transactionId);
       }
 
@@ -1106,5 +1117,323 @@ class AdminService
       error_log("Error getting recent activities: " . $e->getMessage());
       return [];
     }
+  }
+
+  /**
+   * Get all borrowed books with filters - FIXED WITH NULL SAFETY
+   */
+  public function getAllBorrowedBooks($status = null, $userId = null, $isbn = null)
+  {
+    global $mysqli;
+    
+    $sql = "SELECT 
+            bb.id,
+            bb.userId,
+            bb.isbn,
+            bb.borrowDate,
+            bb.dueDate,
+            bb.returnDate,
+            bb.status,
+            bb.notes,
+            bb.addedBy,
+            bb.createdAt,
+            COALESCE(u.username, 'Unknown') as username,
+            COALESCE(u.emailId, '') as emailId,
+            COALESCE(u.userType, 'Unknown') as userType,
+            COALESCE(b.bookName, 'Unknown Book') as bookName,
+            COALESCE(b.authorName, 'Unknown Author') as authorName,
+            COALESCE(b.barcode, '') as barcode,
+            DATEDIFF(CURDATE(), bb.dueDate) as daysOverdue
+        FROM books_borrowed bb
+        LEFT JOIN users u ON bb.userId = u.userId
+        LEFT JOIN books b ON bb.isbn = b.isbn
+        WHERE 1=1";
+        
+    $params = [];
+    $types = '';
+    
+    if ($status) {
+        $sql .= " AND bb.status = ?";
+        $params[] = $status;
+        $types .= 's';
+    }
+    
+    if ($userId) {
+        $sql .= " AND bb.userId = ?";
+        $params[] = $userId;
+        $types .= 's';
+    }
+    
+    if ($isbn) {
+        $sql .= " AND bb.isbn = ?";
+        $params[] = $isbn;
+        $types .= 's';
+    }
+    
+    $sql .= " ORDER BY bb.borrowDate DESC";
+    
+    $stmt = $mysqli->prepare($sql);
+    if (!empty($params)) {
+        $stmt->bind_param($types, ...$params);
+    }
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    $borrowedBooks = [];
+    while ($row = $result->fetch_assoc()) {
+        // CRITICAL FIX: Force string conversion with proper null handling
+        $row['id'] = (int)($row['id'] ?? 0);
+        $row['userId'] = strval($row['userId'] ?? '');
+        $row['isbn'] = strval($row['isbn'] ?? '');
+        $row['borrowDate'] = strval($row['borrowDate'] ?? date('Y-m-d'));
+        $row['dueDate'] = strval($row['dueDate'] ?? date('Y-m-d'));
+        $row['returnDate'] = $row['returnDate'] ? strval($row['returnDate']) : null;
+        $row['status'] = strval($row['status'] ?? 'Active');
+        $row['notes'] = strval($row['notes'] ?? '');
+        $row['addedBy'] = strval($row['addedBy'] ?? '');
+        $row['createdAt'] = strval($row['createdAt'] ?? date('Y-m-d H:i:s'));
+        $row['username'] = strval($row['username'] ?? 'Unknown');
+        $row['emailId'] = strval($row['emailId'] ?? '');
+        $row['userType'] = strval($row['userType'] ?? 'Unknown');
+        $row['bookName'] = strval($row['bookName'] ?? 'Unknown Book');
+        $row['authorName'] = strval($row['authorName'] ?? 'Unknown Author');
+        $row['barcode'] = strval($row['barcode'] ?? '');
+        $row['daysOverdue'] = (int)($row['daysOverdue'] ?? 0);
+        
+        $borrowedBooks[] = $row;
+    }
+    
+    return $borrowedBooks;
+  }
+
+  /**
+   * Get borrowed books statistics
+   */
+  public function getBorrowedBooksStats()
+  {
+      global $mysqli;
+      
+      $sql = "SELECT 
+          COUNT(bb.id) as total,
+          SUM(CASE WHEN bb.status = 'Active' THEN 1 ELSE 0 END) as total_active,
+          SUM(CASE WHEN bb.status = 'Returned' THEN 1 ELSE 0 END) as total_returned,
+          SUM(CASE WHEN bb.status = 'Overdue' THEN 1 ELSE 0 END) as total_overdue,
+          SUM(CASE WHEN u.userType = 'Student' THEN 1 ELSE 0 END) as students,
+          SUM(CASE WHEN u.userType = 'Faculty' THEN 1 ELSE 0 END) as faculty
+      FROM books_borrowed bb
+      LEFT JOIN users u ON bb.userId = u.userId";
+      
+      $result = $mysqli->query($sql);
+      $stats = $result->fetch_assoc();
+      
+      // Ensure all values are integers
+      return [
+          'total' => (int)($stats['total'] ?? 0),
+          'total_active' => (int)($stats['total_active'] ?? 0),
+          'total_returned' => (int)($stats['total_returned'] ?? 0),
+          'total_overdue' => (int)($stats['total_overdue'] ?? 0),
+          'students' => (int)($stats['students'] ?? 0),
+          'faculty' => (int)($stats['faculty'] ?? 0)
+      ];
+  }
+
+  /**
+   * Add a new borrowed book record
+   */
+  public function addBorrowedBook($userId, $isbn, $borrowDate, $dueDate, $notes, $addedBy)
+  {
+      global $mysqli;
+      
+      $mysqli->begin_transaction();
+      
+      try {
+          // Check if book is available
+          $stmt = $mysqli->prepare("SELECT available FROM books WHERE isbn = ?");
+          $stmt->bind_param("s", $isbn);
+          $stmt->execute();
+          $book = $stmt->get_result()->fetch_assoc();
+          $stmt->close();
+          
+          if (!$book || $book['available'] <= 0) {
+              throw new \Exception('Book is not available for borrowing');
+          }
+          
+          // Check if user already has this book borrowed
+          $stmt = $mysqli->prepare("SELECT id FROM books_borrowed WHERE userId = ? AND isbn = ? AND status = 'Active'");
+          $stmt->bind_param("ss", $userId, $isbn);
+          $stmt->execute();
+          if ($stmt->get_result()->num_rows > 0) {
+              $stmt->close();
+              throw new \Exception('User already has this book borrowed');
+          }
+          $stmt->close();
+          
+          // Insert borrowed book record
+          $stmt = $mysqli->prepare("INSERT INTO books_borrowed (userId, isbn, borrowDate, dueDate, status, notes, addedBy, createdAt, updatedAt) VALUES (?, ?, ?, ?, 'Active', ?, ?, NOW(), NOW())");
+          $stmt->bind_param("ssssss", $userId, $isbn, $borrowDate, $dueDate, $notes, $addedBy);
+          $stmt->execute();
+          $stmt->close();
+          
+          // Update book availability
+          $stmt = $mysqli->prepare("UPDATE books SET available = available - 1, borrowed = borrowed + 1 WHERE isbn = ?");
+          $stmt->bind_param("s", $isbn);
+          $stmt->execute();
+          $stmt->close();
+          
+          $mysqli->commit();
+          
+          return [
+              'success' => true,
+              'message' => 'Borrowed book record added successfully'
+          ];
+          
+      } catch (\Exception $e) {
+          $mysqli->rollback();
+          return [
+              'success' => false,
+              'message' => $e->getMessage()
+          ];
+      }
+  }
+
+  /**
+   * Update a borrowed book record
+   */
+  public function updateBorrowedBook($id, $userId, $isbn, $borrowDate, $dueDate, $returnDate, $status, $notes)
+  {
+      global $mysqli;
+      
+      try {
+          $stmt = $mysqli->prepare("UPDATE books_borrowed SET userId = ?, isbn = ?, borrowDate = ?, dueDate = ?, returnDate = ?, status = ?, notes = ?, updatedAt = NOW() WHERE id = ?");
+          $stmt->bind_param("sssssssi", $userId, $isbn, $borrowDate, $dueDate, $returnDate, $status, $notes, $id);
+          $stmt->execute();
+          $stmt->close();
+          
+          return [
+              'success' => true,
+              'message' => 'Borrowed book record updated successfully'
+          ];
+          
+      } catch (\Exception $e) {
+          return [
+              'success' => false,
+              'message' => 'Failed to update borrowed book record: ' . $e->getMessage()
+          ];
+      }
+  }
+
+  /**
+   * Mark a borrowed book as returned
+   */
+  public function markBookAsReturned($id)
+  {
+      global $mysqli;
+      
+      $mysqli->begin_transaction();
+      
+      try {
+          // Get borrowed book details
+          $stmt = $mysqli->prepare("SELECT * FROM books_borrowed WHERE id = ?");
+          $stmt->bind_param("i", $id);
+          $stmt->execute();
+          $borrowedBook = $stmt->get_result()->fetch_assoc();
+          $stmt->close();
+          
+          if (!$borrowedBook) {
+              throw new \Exception('Borrowed book record not found');
+          }
+          
+          if ($borrowedBook['status'] === 'Returned') {
+              throw new \Exception('Book already marked as returned');
+          }
+          
+          $isbn = $borrowedBook['isbn'];
+          $returnDate = date('Y-m-d');
+          
+          // Update books_borrowed table
+          $stmt = $mysqli->prepare("UPDATE books_borrowed SET returnDate = ?, status = 'Returned', updatedAt = NOW() WHERE id = ?");
+          $stmt->bind_param("si", $returnDate, $id);
+          $stmt->execute();
+          $stmt->close();
+          
+          // Update books table - increment available, decrement borrowed
+          $stmt = $mysqli->prepare("UPDATE books SET available = available + 1, borrowed = borrowed - 1 WHERE isbn = ?");
+          $stmt->bind_param("s", $isbn);
+          $stmt->execute();
+          $stmt->close();
+          
+          // Create notification for user
+          $notifStmt = $mysqli->prepare("INSERT INTO notifications (userId, title, message, type, priority, relatedId, createdAt) VALUES (?, 'Book Returned', ?, 'system', 'medium', ?, NOW())");
+          $message = "Your borrowed book (ISBN: {$isbn}) has been successfully returned on {$returnDate}.";
+          $notifStmt->bind_param("ssi", $borrowedBook['userId'], $message, $id);
+          $notifStmt->execute();
+          $notifStmt->close();
+          
+          $mysqli->commit();
+          
+          return [
+              'success' => true,
+              'message' => 'Book marked as returned successfully'
+          ];
+          
+      } catch (\Exception $e) {
+          $mysqli->rollback();
+          error_log("Error marking book as returned: " . $e->getMessage());
+          return [
+              'success' => false,
+              'message' => $e->getMessage()
+          ];
+      }
+  }
+
+  /**
+   * Delete a borrowed book record
+   */
+  public function deleteBorrowedBook($id)
+  {
+      global $mysqli;
+      
+      $mysqli->begin_transaction();
+      
+      try {
+          // Get borrowed book details before deletion
+          $stmt = $mysqli->prepare("SELECT * FROM books_borrowed WHERE id = ?");
+          $stmt->bind_param("i", $id);
+          $stmt->execute();
+          $borrowedBook = $stmt->get_result()->fetch_assoc();
+          $stmt->close();
+          
+          if (!$borrowedBook) {
+              throw new \Exception('Borrowed book record not found');
+          }
+          
+          // If book was not returned, update book availability
+          if ($borrowedBook['status'] === 'Active' && !$borrowedBook['returnDate']) {
+              $stmt = $mysqli->prepare("UPDATE books SET available = available + 1, borrowed = borrowed - 1 WHERE isbn = ?");
+              $stmt->bind_param("s", $borrowedBook['isbn']);
+              $stmt->execute();
+              $stmt->close();
+          }
+          
+          // Delete the record
+          $stmt = $mysqli->prepare("DELETE FROM books_borrowed WHERE id = ?");
+          $stmt->bind_param("i", $id);
+          $stmt->execute();
+          $stmt->close();
+          
+          $mysqli->commit();
+          
+          return [
+              'success' => true,
+              'message' => 'Borrowed book record deleted successfully'
+          ];
+          
+      } catch (\Exception $e) {
+          $mysqli->rollback();
+          return [
+              'success' => false,
+              'message' => 'Failed to delete borrowed book record: ' . $e->getMessage()
+          ];
+      }
   }
 }

@@ -5,12 +5,10 @@
  * Routes requests to appropriate controllers based on URL patterns
  */
 
-use App\Controllers\AdminController;
-
 // Start session
 session_start();
 
-// Define application paths (needed before including config)
+// Define application paths
 define('APP_ROOT', dirname(__DIR__));
 define('PUBLIC_ROOT', __DIR__);
 
@@ -25,360 +23,517 @@ ini_set('error_log', APP_ROOT . '/logs/error.log');
 error_log("=== Application Starting ===");
 error_log("APP_ROOT: " . APP_ROOT);
 error_log("PUBLIC_ROOT: " . PUBLIC_ROOT);
+error_log("Request URI: " . $_SERVER['REQUEST_URI']);
+error_log("Request Method: " . $_SERVER['REQUEST_METHOD']);
 
-// Include Composer autoloader - FIXED PATH (use root vendor, not src/vendor)
+// Include Composer autoloader
 $vendorPath = dirname(APP_ROOT) . '/vendor/autoload.php';
 if (file_exists($vendorPath)) {
-  require_once $vendorPath;
-  error_log("Composer autoloader loaded from: {$vendorPath}");
+    require_once $vendorPath;
+    error_log("Composer autoloader loaded from: {$vendorPath}");
 } else {
-  error_log("WARNING: Composer autoloader not found at {$vendorPath}");
-  error_log("Please run 'composer install' in the project root.");
+    error_log("WARNING: Composer autoloader not found at {$vendorPath}");
+    error_log("Please run 'composer install' in the project root.");
 }
 
-// Include configuration (this creates $mysqli)
+// Include configuration
 require_once APP_ROOT . '/config/config.php';
 error_log("Config loaded");
 
-// Include dbConnection for backwards compatibility (creates $conn alias)
+// Include dbConnection for backwards compatibility
 require_once APP_ROOT . '/config/dbConnection.php';
 error_log("DB Connection loaded");
 
-// Verify connection
+// Verify database connection
 if (!$mysqli || !($mysqli instanceof mysqli)) {
-  error_log("ERROR: Database connection failed - mysqli not initialized");
-  die("Database connection failed in index.php");
+    error_log("ERROR: Database connection failed - mysqli not initialized");
+    die("Database connection failed");
 }
 
 if (!$conn || !($conn instanceof mysqli)) {
-  error_log("ERROR: Database connection failed - conn not initialized");
-  die("Database connection failed - conn alias not created");
+    error_log("ERROR: Database connection failed - conn not initialized");
+    die("Database connection failed - conn alias not created");
 }
 
 error_log("Database connections verified (mysqli and conn)");
 
-// Simple routing system
 class Router
 {
-  private $routes = [];
+    private $routes = [];
+    private $beforeMiddleware = [];
+    private $afterMiddleware = [];
 
-  public function addRoute($method, $path, $controller, $action)
-  {
-    $this->routes[] = [
-      'method' => $method,
-      'path' => $path,
-      'controller' => $controller,
-      'action' => $action
-    ];
-  }
-
-  public function dispatch()
-  {
-    $method = $_SERVER['REQUEST_METHOD'];
-    $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-    $path = rtrim($path, '/');
-
-    // Remove base path if running in subdirectory
-    $basePath = str_replace($_SERVER['DOCUMENT_ROOT'], '', PUBLIC_ROOT);
-    if (strpos($path, $basePath) === 0) {
-      $path = substr($path, strlen($basePath));
+    /**
+     * Add a route to the router
+     */
+    public function addRoute($method, $path, $controller, $action)
+    {
+        $this->routes[] = [
+            'method' => $method,
+            'path' => $path,
+            'controller' => $controller,
+            'action' => $action
+        ];
     }
 
-    // Default route
-    if (empty($path) || $path === '/') {
-      $path = '/';
+    /**
+     * Add multiple routes at once
+     */
+    public function addRoutes(array $routes)
+    {
+        foreach ($routes as $route) {
+            $this->addRoute(
+                $route['method'],
+                $route['path'],
+                $route['controller'],
+                $route['action']
+            );
+        }
     }
 
-    error_log("Routing: {$method} {$path}");
-
-    // First try exact matches
-    foreach ($this->routes as $route) {
-      if ($route['method'] === $method && $route['path'] === $path) {
-        error_log("Route matched: {$route['controller']}::{$route['action']}");
-        $this->callController($route['controller'], $route['action']);
-        return;
-      }
-    }
-    
-    // Then try pattern matches for dynamic routes
-    foreach ($this->routes as $route) {
-      // Convert route pattern to regex
-      $pattern = preg_replace('/\{([a-zA-Z0-9_]+)\}/', '([^/]+)', $route['path']);
-      $pattern = '#^' . $pattern . '$#';
-      
-      if ($route['method'] === $method && preg_match($pattern, $path, $matches)) {
-        error_log("Dynamic route matched: {$route['controller']}::{$route['action']}");
+    /**
+     * Add a route group with common prefix
+     */
+    public function group($prefix, callable $callback)
+    {
+        $originalRoutes = $this->routes;
+        $this->routes = [];
         
-        // Extract parameter names
-        preg_match_all('/\{([a-zA-Z0-9_]+)\}/', $route['path'], $paramNames);
+        $callback($this);
         
-        // Build params array
-        $params = [];
-        for ($i = 0; $i < count($paramNames[1]); $i++) {
-          $params[$paramNames[1][$i]] = $matches[$i + 1];
-        }
+        $groupRoutes = $this->routes;
+        $this->routes = $originalRoutes;
         
-        $this->callController($route['controller'], $route['action'], $params);
-        return;
-      }
+        foreach ($groupRoutes as $route) {
+            $route['path'] = rtrim($prefix, '/') . $route['path'];
+            $this->routes[] = $route;
+        }
     }
 
-    // 404 Not Found
-    error_log("No route matched - 404");
-    http_response_code(404);
-    include APP_ROOT . '/views/errors/404.php';
-  }
-
-  private function callController($controller, $action, $params = [])
-  {
-    $controllerClass = "App\\Controllers\\{$controller}";
-
-    error_log("Attempting to load controller: {$controllerClass}");
-
-    if (!class_exists($controllerClass)) {
-      error_log("ERROR: Controller class not found: {$controllerClass}");
-      $this->show404();
-      return;
+    /**
+     * Add middleware to run before routing
+     */
+    public function addBeforeMiddleware(callable $middleware)
+    {
+        $this->beforeMiddleware[] = $middleware;
     }
 
-    error_log("Controller class found: {$controllerClass}");
-
-    try {
-      $controllerInstance = new $controllerClass();
-      error_log("Controller instance created");
-    } catch (\Exception $e) {
-      error_log("ERROR creating controller instance: " . $e->getMessage());
-      error_log("Stack trace: " . $e->getTraceAsString());
-      $this->showDetailedError($e, "Controller Instantiation Error");
-      return;
+    /**
+     * Add middleware to run after routing
+     */
+    public function addAfterMiddleware(callable $middleware)
+    {
+        $this->afterMiddleware[] = $middleware;
     }
 
-    if (!method_exists($controllerInstance, $action)) {
-      error_log("ERROR: Method not found: {$action}");
-      $this->show404();
-      return;
+    /**
+     * Dispatch the request to the appropriate controller
+     */
+    public function dispatch()
+    {
+        // Run before middleware
+        foreach ($this->beforeMiddleware as $middleware) {
+            $middleware();
+        }
+
+        $method = $_SERVER['REQUEST_METHOD'];
+        $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+        $path = rtrim($path, '/');
+
+        // Remove base path if running in subdirectory
+        $basePath = str_replace($_SERVER['DOCUMENT_ROOT'], '', PUBLIC_ROOT);
+        if (strpos($path, $basePath) === 0) {
+            $path = substr($path, strlen($basePath));
+        }
+
+        // Remove /index.php if present
+        $path = str_replace('/index.php', '', $path);
+
+        // Default route
+        if (empty($path) || $path === '/') {
+            $path = '/';
+        }
+
+        error_log("Routing: {$method} {$path}");
+
+        // First try exact matches
+        foreach ($this->routes as $route) {
+            if ($route['method'] === $method && $route['path'] === $path) {
+                error_log("Exact route matched: {$route['controller']}::{$route['action']}");
+                $this->callController($route['controller'], $route['action']);
+                
+                // Run after middleware
+                foreach ($this->afterMiddleware as $middleware) {
+                    $middleware();
+                }
+                return;
+            }
+        }
+
+        // Then try pattern matches for dynamic routes
+        foreach ($this->routes as $route) {
+            // Convert route pattern to regex
+            $pattern = preg_replace('/\{([a-zA-Z0-9_]+)\}/', '([^/]+)', $route['path']);
+            $pattern = '#^' . $pattern . '$#';
+
+            if ($route['method'] === $method && preg_match($pattern, $path, $matches)) {
+                error_log("Dynamic route matched: {$route['controller']}::{$route['action']}");
+
+                // Extract parameter names
+                preg_match_all('/\{([a-zA-Z0-9_]+)\}/', $route['path'], $paramNames);
+
+                // Build params array
+                $params = [];
+                for ($i = 0; $i < count($paramNames[1]); $i++) {
+                    $params[$paramNames[1][$i]] = $matches[$i + 1];
+                }
+
+                $this->callController($route['controller'], $route['action'], $params);
+                
+                // Run after middleware
+                foreach ($this->afterMiddleware as $middleware) {
+                    $middleware();
+                }
+                return;
+            }
+        }
+
+        // 404 Not Found
+        error_log("No route matched - 404");
+        $this->show404();
     }
 
-    error_log("Calling action: {$action}");
+    /**
+     * Call the controller action
+     */
+    private function callController($controller, $action, $params = [])
+    {
+        $controllerClass = "App\\Controllers\\{$controller}";
 
-    try {
-      // Call the controller action with params
-      if (!empty($params)) {
-        $controllerInstance->$action($params);
-      } else {
-        $controllerInstance->$action();
-      }
-      error_log("Action completed successfully");
-    } catch (\Exception $e) {
-      // Log the error
-      error_log("ERROR in {$controller}::{$action}");
-      error_log("Error message: " . $e->getMessage());
-      error_log("Error code: " . $e->getCode());
-      error_log("Error file: " . $e->getFile() . ":" . $e->getLine());
-      error_log("Stack trace: " . $e->getTraceAsString());
+        error_log("Attempting to load controller: {$controllerClass}");
 
-      // Show detailed error page
-      $this->showDetailedError($e, "{$controller}::{$action}");
-    } catch (\Error $e) {
-      // Catch PHP 7+ errors (like undefined variable, etc)
-      error_log("PHP ERROR in {$controller}::{$action}");
-      error_log("Error message: " . $e->getMessage());
-      error_log("Error file: " . $e->getFile() . ":" . $e->getLine());
-      error_log("Stack trace: " . $e->getTraceAsString());
+        // Check if controller class exists
+        if (!class_exists($controllerClass)) {
+            error_log("ERROR: Controller class not found: {$controllerClass}");
+            
+            // Try to require the controller file
+            $controllerFile = APP_ROOT . '/Controllers/' . $controller . '.php';
+            if (file_exists($controllerFile)) {
+                require_once $controllerFile;
+                error_log("Controller file loaded: {$controllerFile}");
+                
+                // Check again after requiring
+                if (!class_exists($controllerClass)) {
+                    error_log("ERROR: Controller class still not found after requiring file");
+                    $this->show404();
+                    return;
+                }
+            } else {
+                error_log("ERROR: Controller file not found: {$controllerFile}");
+                $this->show404();
+                return;
+            }
+        }
 
-      // Show detailed error page
-      $this->showDetailedError($e, "{$controller}::{$action}");
+        error_log("Controller class found: {$controllerClass}");
+
+        try {
+            $controllerInstance = new $controllerClass();
+            error_log("Controller instance created");
+        } catch (\Exception $e) {
+            error_log("ERROR creating controller instance: " . $e->getMessage());
+            error_log("Stack trace: " . $e->getTraceAsString());
+            $this->showDetailedError($e, "Controller Instantiation Error");
+            return;
+        }
+
+        // Check if method exists
+        if (!method_exists($controllerInstance, $action)) {
+            error_log("ERROR: Method not found: {$controllerClass}::{$action}");
+            $this->show404();
+            return;
+        }
+
+        error_log("Calling action: {$action}");
+
+        try {
+            // Call the controller action with params
+            if (!empty($params)) {
+                $controllerInstance->$action($params);
+            } else {
+                $controllerInstance->$action();
+            }
+            error_log("Action completed successfully");
+        } catch (\Exception $e) {
+            // Log the error
+            error_log("ERROR in {$controller}::{$action}");
+            error_log("Error message: " . $e->getMessage());
+            error_log("Error code: " . $e->getCode());
+            error_log("Error file: " . $e->getFile() . ":" . $e->getLine());
+            error_log("Stack trace: " . $e->getTraceAsString());
+
+            // Show detailed error page
+            $this->showDetailedError($e, "{$controller}::{$action}");
+        } catch (\Error $e) {
+            // Catch PHP 7+ errors (like undefined variable, etc)
+            error_log("PHP ERROR in {$controller}::{$action}");
+            error_log("Error message: " . $e->getMessage());
+            error_log("Error file: " . $e->getFile() . ":" . $e->getLine());
+            error_log("Stack trace: " . $e->getTraceAsString());
+
+            // Show detailed error page
+            $this->showDetailedError($e, "{$controller}::{$action}");
+        }
     }
-  }
 
-  private function showDetailedError($exception, $context)
-  {
-    http_response_code(500);
-?>
-    <!DOCTYPE html>
-    <html>
-
-    <head>
-      <title>Application Error</title>
-      <style>
-        body {
-          font-family: 'Segoe UI', Arial, sans-serif;
-          background: #f5f5f5;
-          padding: 20px;
-        }
-
-        .error-container {
-          max-width: 1200px;
-          margin: 0 auto;
-          background: white;
-          border-radius: 8px;
-          box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-          overflow: hidden;
-        }
-
-        .error-header {
-          background: #ef4444;
-          color: white;
-          padding: 20px 30px;
-        }
-
-        .error-header h1 {
-          margin: 0;
-          font-size: 24px;
-        }
-
-        .error-header p {
-          margin: 10px 0 0 0;
-          opacity: 0.9;
-        }
-
-        .error-body {
-          padding: 30px;
-        }
-
-        .error-section {
-          margin-bottom: 30px;
-        }
-
-        .error-section h2 {
-          color: #1f2937;
-          font-size: 18px;
-          margin-bottom: 15px;
-          border-bottom: 2px solid #e5e7eb;
-          padding-bottom: 10px;
-        }
-
-        .error-code {
-          background: #fee2e2;
-          border-left: 4px solid #ef4444;
-          padding: 15px;
-          border-radius: 4px;
-          font-family: 'Courier New', monospace;
-          font-size: 14px;
-          color: #991b1b;
-          overflow-x: auto;
-        }
-
-        .stack-trace {
-          background: #f9fafb;
-          border: 1px solid #e5e7eb;
-          padding: 15px;
-          border-radius: 4px;
-          font-family: 'Courier New', monospace;
-          font-size: 12px;
-          color: #374151;
-          overflow-x: auto;
-          white-space: pre-wrap;
-        }
-
-        .info-box {
-          background: #dbeafe;
-          border-left: 4px solid #3b82f6;
-          padding: 15px;
-          border-radius: 4px;
-          margin-bottom: 15px;
-        }
-
-        .info-box strong {
-          color: #1e40af;
-        }
-      </style>
-    </head>
-
-    <body>
-      <div class="error-container">
-        <div class="error-header">
-          <h1>⚠️ Application Error</h1>
-          <p>An error occurred while processing your request</p>
-        </div>
-        <div class="error-body">
-          <div class="error-section">
-            <h2>Context</h2>
-            <div class="info-box">
-              <strong>Location:</strong> <?= htmlspecialchars($context) ?>
+    /**
+     * Show detailed error page
+     */
+    private function showDetailedError($exception, $context)
+    {
+        http_response_code(500);
+        
+        // Check if we should display errors
+        $displayErrors = ini_get('display_errors');
+        
+        ?>
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Application Error</title>
+            <style>
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                    line-height: 1.6;
+                    color: #333;
+                    max-width: 1200px;
+                    margin: 0 auto;
+                    padding: 20px;
+                    background: #f5f5f5;
+                }
+                .error-container {
+                    background: white;
+                    border-radius: 8px;
+                    padding: 30px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                }
+                h1 {
+                    color: #d32f2f;
+                    margin-top: 0;
+                }
+                .context {
+                    background: #fff3cd;
+                    border-left: 4px solid #ffc107;
+                    padding: 15px;
+                    margin: 20px 0;
+                }
+                .message {
+                    background: #f8d7da;
+                    border-left: 4px solid #dc3545;
+                    padding: 15px;
+                    margin: 20px 0;
+                }
+                .trace {
+                    background: #f8f9fa;
+                    border: 1px solid #dee2e6;
+                    padding: 15px;
+                    overflow-x: auto;
+                    margin: 20px 0;
+                }
+                pre {
+                    margin: 0;
+                    white-space: pre-wrap;
+                    word-wrap: break-word;
+                }
+                .file-line {
+                    color: #6c757d;
+                    font-size: 0.9em;
+                }
+                .btn {
+                    display: inline-block;
+                    padding: 10px 20px;
+                    background: #007bff;
+                    color: white;
+                    text-decoration: none;
+                    border-radius: 4px;
+                    margin-top: 20px;
+                }
+                .btn:hover {
+                    background: #0056b3;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="error-container">
+                <h1>⚠️ Application Error</h1>
+                
+                <div class="context">
+                    <strong>Context:</strong> <?php echo htmlspecialchars($context); ?>
+                </div>
+                
+                <div class="message">
+                    <strong>Error Message:</strong><br>
+                    <?php echo htmlspecialchars($exception->getMessage()); ?>
+                </div>
+                
+                <?php if ($displayErrors): ?>
+                <div class="file-line">
+                    <strong>File:</strong> <?php echo htmlspecialchars($exception->getFile()); ?><br>
+                    <strong>Line:</strong> <?php echo $exception->getLine(); ?>
+                </div>
+                
+                <div class="trace">
+                    <strong>Stack Trace:</strong>
+                    <pre><?php echo htmlspecialchars($exception->getTraceAsString()); ?></pre>
+                </div>
+                <?php else: ?>
+                <p>Error details have been logged. Please contact the system administrator.</p>
+                <?php endif; ?>
+                
+                <a href="<?php echo BASE_URL; ?>" class="btn">Return to Home</a>
             </div>
-          </div>
-
-          <div class="error-section">
-            <h2>Error Message</h2>
-            <div class="error-code">
-              <?= htmlspecialchars($exception->getMessage()) ?>
-            </div>
-          </div>
-
-          <div class="error-section">
-            <h2>Error Details</h2>
-            <div class="info-box">
-              <strong>Type:</strong> <?= get_class($exception) ?><br>
-              <strong>File:</strong> <?= htmlspecialchars($exception->getFile()) ?><br>
-              <strong>Line:</strong> <?= $exception->getLine() ?>
-            </div>
-          </div>
-
-          <div class="error-section">
-            <h2>Stack Trace</h2>
-            <div class="stack-trace"><?= htmlspecialchars($exception->getTraceAsString()) ?></div>
-          </div>
-
-          <div class="error-section">
-            <h2>Request Information</h2>
-            <div class="info-box">
-              <strong>Method:</strong> <?= htmlspecialchars($_SERVER['REQUEST_METHOD']) ?><br>
-              <strong>URI:</strong> <?= htmlspecialchars($_SERVER['REQUEST_URI']) ?><br>
-              <strong>Session User:</strong> <?= isset($_SESSION['userId']) ? htmlspecialchars($_SESSION['userId']) : 'Not logged in' ?><br>
-              <strong>User Type:</strong> <?= isset($_SESSION['userType']) ? htmlspecialchars($_SESSION['userType']) : 'N/A' ?>
-            </div>
-          </div>
-        </div>
-      </div>
-    </body>
-
-    </html>
-<?php
-    exit;
-  }
-
-  private function show404()
-  {
-    http_response_code(404);
-    if (file_exists(APP_ROOT . '/views/errors/404.php')) {
-      include APP_ROOT . '/views/errors/404.php';
-    } else {
-      echo '<h1>404 - Page Not Found</h1><p>The requested page could not be found.</p>';
+        </body>
+        </html>
+        <?php
+        exit;
     }
-  }
 
-  private function show403()
-  {
-    http_response_code(403);
-    if (file_exists(APP_ROOT . '/views/errors/403.php')) {
-      include APP_ROOT . '/views/errors/403.php';
-    } else {
-      echo '<h1>403 - Access Forbidden</h1><p>You do not have permission to access this resource.</p>';
+    /**
+     * Show 404 error page
+     */
+    private function show404()
+    {
+        http_response_code(404);
+        if (file_exists(APP_ROOT . '/views/errors/404.php')) {
+            include APP_ROOT . '/views/errors/404.php';
+        } else {
+            ?>
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>404 - Page Not Found</title>
+                <style>
+                    body {
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                        display: flex;
+                        justify-content: center;
+                        align-items: center;
+                        height: 100vh;
+                        margin: 0;
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        color: white;
+                    }
+                    .container {
+                        text-align: center;
+                    }
+                    h1 {
+                        font-size: 120px;
+                        margin: 0;
+                    }
+                    p {
+                        font-size: 24px;
+                    }
+                    a {
+                        color: white;
+                        text-decoration: none;
+                        border: 2px solid white;
+                        padding: 10px 30px;
+                        border-radius: 30px;
+                        display: inline-block;
+                        margin-top: 20px;
+                        transition: all 0.3s;
+                    }
+                    a:hover {
+                        background: white;
+                        color: #667eea;
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1>404</h1>
+                    <p>Page Not Found</p>
+                    <a href="<?php echo BASE_URL; ?>">Go Home</a>
+                </div>
+            </body>
+            </html>
+            <?php
+        }
+        exit;
     }
-  }
 
-  private function show500()
-  {
-    http_response_code(500);
-    if (file_exists(APP_ROOT . '/views/errors/500.php')) {
-      include APP_ROOT . '/views/errors/500.php';
-    } else {
-      echo '<h1>500 - Internal Server Error</h1><p>An error occurred while processing your request.</p>';
+    /**
+     * Show 403 error page
+     */
+    public function show403()
+    {
+        http_response_code(403);
+        if (file_exists(APP_ROOT . '/views/errors/403.php')) {
+            include APP_ROOT . '/views/errors/403.php';
+        } else {
+            echo '<h1>403 - Access Forbidden</h1><p>You do not have permission to access this resource.</p>';
+        }
+        exit;
     }
-  }
+
+    /**
+     * Show 500 error page
+     */
+    public function show500()
+    {
+        http_response_code(500);
+        if (file_exists(APP_ROOT . '/views/errors/500.php')) {
+            include APP_ROOT . '/views/errors/500.php';
+        } else {
+            echo '<h1>500 - Internal Server Error</h1><p>An error occurred while processing your request.</p>';
+        }
+        exit;
+    }
+
+    /**
+     * Get all registered routes (for debugging)
+     */
+    public function getRoutes()
+    {
+        return $this->routes;
+    }
+
+    /**
+     * Check if a route exists
+     */
+    public function routeExists($method, $path)
+    {
+        foreach ($this->routes as $route) {
+            if ($route['method'] === $method && $route['path'] === $path) {
+                return true;
+            }
+        }
+        return false;
+    }
 }
 
-// Initialize router and define routes
+
+// Initialize router
 $router = new Router();
 
-// Home page routes
+// ============================================================================
+// HOME & PUBLIC ROUTES
+// ============================================================================
+
 $router->addRoute('GET', '/', 'HomeController', 'index');
+$router->addRoute('GET', '/home', 'HomeController', 'index');
 $router->addRoute('GET', '/about', 'HomeController', 'about');
 $router->addRoute('GET', '/contact', 'HomeController', 'contact');
 $router->addRoute('GET', '/library', 'HomeController', 'library');
 
-// Authentication routes
+// ============================================================================
+// AUTHENTICATION ROUTES
+// ============================================================================
+
 $router->addRoute('GET', '/login', 'AuthController', 'login');
 $router->addRoute('POST', '/login', 'AuthController', 'login');
 $router->addRoute('GET', '/signup', 'AuthController', 'signup');
@@ -389,74 +544,120 @@ $router->addRoute('GET', '/forgot-password', 'AuthController', 'forgotPassword')
 $router->addRoute('POST', '/forgot-password', 'AuthController', 'forgotPassword');
 $router->addRoute('GET', '/logout', 'AuthController', 'logout');
 
-// User dashboard routes
+// ============================================================================
+// USER ROUTES
+// ============================================================================
+
+// User Dashboard
 $router->addRoute('GET', '/user/dashboard', 'UserController', 'dashboard');
+$router->addRoute('GET', '/user/index', 'UserController', 'dashboard');
+
+// User Profile
 $router->addRoute('GET', '/user/profile', 'UserController', 'profile');
 $router->addRoute('POST', '/user/profile', 'UserController', 'updateProfile');
 $router->addRoute('POST', '/user/change-password', 'UserController', 'changePassword');
 
-// User book management routes
+// User Books
 $router->addRoute('GET', '/user/books', 'BookController', 'userBooks');
+// Support both path parameter and query parameter formats
+$router->addRoute('GET', '/user/book', 'BookController', 'viewBook');
+$router->addRoute('GET', '/user/book/{isbn}', 'BookController', 'viewBook');
+$router->addRoute('GET', '/user/reserve', 'UserController', 'reserve');
+$router->addRoute('POST', '/user/reserve', 'UserController', 'reserve');
+$router->addRoute('GET', '/user/reserve/{isbn}', 'UserController', 'reserve');
+$router->addRoute('POST', '/user/reserve/{isbn}', 'UserController', 'reserve');
+$router->addRoute('GET', '/user/reserved-books', 'UserController', 'reservedBooks');
+$router->addRoute('GET', '/user/borrow-history', 'UserController', 'borrowHistory');
+$router->addRoute('POST', '/user/submit-review', 'UserController', 'submitReview');
 $router->addRoute('GET', '/user/borrow', 'BookController', 'borrow');
 $router->addRoute('POST', '/user/borrow', 'BookController', 'borrowBook');
 $router->addRoute('GET', '/user/return', 'BookController', 'return');
 $router->addRoute('POST', '/user/return', 'BookController', 'returnBook');
+$router->addRoute('GET', '/user/returns', 'UserController', 'returns');
 
-// User fines routes
+// User Fines
 $router->addRoute('GET', '/user/fines', 'UserController', 'fines');
+$router->addRoute('GET', '/user/payFine', 'UserController', 'showPaymentForm');
+$router->addRoute('POST', '/user/payFine', 'UserController', 'payFine');
+$router->addRoute('GET', '/user/payment-form', 'UserController', 'showPaymentForm');
+$router->addRoute('POST', '/user/payment-form', 'UserController', 'payFine');
 $router->addRoute('POST', '/user/fines', 'UserController', 'payFine');
+$router->addRoute('POST', '/user/pay-all-fines', 'UserController', 'payAllFines');
 
-// Student routes
+// User Notifications
+$router->addRoute('GET', '/user/notifications', 'UserController', 'notifications');
+$router->addRoute('POST', '/user/notifications/mark-read', 'UserController', 'markNotificationRead');
+
+// ============================================================================
+// STUDENT ROUTES (alias to user routes)
+// ============================================================================
+
 $router->addRoute('GET', '/student/dashboard', 'UserController', 'dashboard');
 $router->addRoute('GET', '/student/profile', 'UserController', 'profile');
 $router->addRoute('POST', '/student/profile', 'UserController', 'updateProfile');
 $router->addRoute('POST', '/student/change-password', 'UserController', 'changePassword');
 
-// Faculty routes
+// ============================================================================
+// FACULTY ROUTES
+// ============================================================================
+
+// Faculty Dashboard
 $router->addRoute('GET', '/faculty/dashboard', 'FacultyController', 'dashboard');
+$router->addRoute('GET', '/faculty/index', 'FacultyController', 'dashboard');
+
+// Faculty Books
 $router->addRoute('GET', '/faculty/books', 'FacultyController', 'books');
+$router->addRoute('GET', '/faculty/book', 'FacultyController', 'viewBook');
 $router->addRoute('GET', '/faculty/book/{isbn}', 'FacultyController', 'viewBook');
-$router->addRoute('GET', '/faculty/fines', 'FacultyController', 'fines');
-$router->addRoute('POST', '/faculty/fines', 'FacultyController', 'fines');
+$router->addRoute('GET', '/faculty/search', 'FacultyController', 'search');
+
+// Faculty Reserve & Borrow
+$router->addRoute('GET', '/faculty/reserve', 'FacultyController', 'reserve');
+$router->addRoute('POST', '/faculty/reserve', 'FacultyController', 'reserve');
+$router->addRoute('GET', '/faculty/reserve/{isbn}', 'FacultyController', 'reserve');
+$router->addRoute('POST', '/faculty/reserve/{isbn}', 'FacultyController', 'reserve');
+$router->addRoute('GET', '/faculty/reserved-books', 'FacultyController', 'reservedBooks');
+$router->addRoute('GET', '/faculty/borrow-history', 'FacultyController', 'borrowHistory');
+
+// Faculty Return
 $router->addRoute('GET', '/faculty/return', 'FacultyController', 'returnBook');
 $router->addRoute('POST', '/faculty/return', 'FacultyController', 'returnBook');
-$router->addRoute('GET', '/faculty/search', 'FacultyController', 'search');
-$router->addRoute('POST', '/faculty/reserve/{isbn}', 'FacultyController', 'reserve');
-$router->addRoute('GET', '/faculty/reserve/{isbn}', 'FacultyController', 'reserve');
-$router->addRoute('GET', '/faculty/borrow-history', 'FacultyController', 'borrowHistory');
+
+// Faculty Fines
+$router->addRoute('GET', '/faculty/fines', 'FacultyController', 'fines');
+$router->addRoute('POST', '/faculty/fines', 'FacultyController', 'fines');
+$router->addRoute('GET', '/faculty/payment-form', 'FacultyController', 'showPaymentForm');
+$router->addRoute('POST', '/faculty/payment-form', 'FacultyController', 'payFine');
+
+// Faculty Profile
 $router->addRoute('GET', '/faculty/profile', 'FacultyController', 'profile');
 $router->addRoute('POST', '/faculty/profile', 'FacultyController', 'profile');
+
+// Faculty Notifications
+$router->addRoute('GET', '/faculty/notifications', 'FacultyController', 'notifications');
+
+// Faculty Feedback & Requests
 $router->addRoute('GET', '/faculty/feedback', 'FacultyController', 'feedback');
 $router->addRoute('POST', '/faculty/feedback', 'FacultyController', 'feedback');
 $router->addRoute('GET', '/faculty/book-request', 'FacultyController', 'bookRequest');
 $router->addRoute('POST', '/faculty/book-request', 'FacultyController', 'bookRequest');
-$router->addRoute('GET', '/faculty/notifications', 'FacultyController', 'notifications');
 
-// Admin routes
+// ============================================================================
+// ADMIN ROUTES
+// ============================================================================
+
+// Admin Dashboard
 $router->addRoute('GET', '/admin/dashboard', 'AdminController', 'dashboard');
+$router->addRoute('GET', '/admin/index', 'AdminController', 'dashboard');
+$router->addRoute('GET', '/admin', 'AdminController', 'dashboard');
+
+// Admin Users Management
 $router->addRoute('GET', '/admin/users', 'AdminController', 'users');
 $router->addRoute('POST', '/admin/users/add', 'AdminController', 'addUser');
 $router->addRoute('POST', '/admin/users/edit', 'AdminController', 'editUser');
 $router->addRoute('POST', '/admin/users/delete', 'AdminController', 'deleteUser');
-$router->addRoute('GET', '/admin/reports', 'AdminController', 'reports');
-$router->addRoute('GET', '/admin/settings', 'AdminController', 'settings');
-$router->addRoute('POST', '/admin/settings', 'AdminController', 'updateSettings');
-$router->addRoute('GET', '/admin/fines', 'AdminController', 'fines');
-$router->addRoute('POST', '/admin/fines', 'AdminController', 'updateFines');
-$router->addRoute('GET', '/admin/maintenance', 'AdminController', 'maintenance');
-$router->addRoute('POST', '/admin/backup', 'AdminController', 'createBackup');
-$router->addRoute('POST', '/admin/maintenance/perform', 'AdminController', 'performMaintenance');
 
-// Admin borrow requests routes
-$router->addRoute('GET', '/admin/borrow-requests', 'AdminController', 'borrowRequests');
-$router->addRoute('POST', '/admin/borrow-requests/handle', 'AdminController', 'handleBorrowRequest');
-$router->addRoute('GET', '/admin/analytics', 'AdminController', 'analytics');
-
-// Admin notifications routes
-$router->addRoute('GET', '/admin/notifications', 'AdminController', 'notifications');
-$router->addRoute('POST', '/admin/notifications/mark-read', 'AdminController', 'markNotificationRead');
-
-// Admin book management routes
+// Admin Books Management
 $router->addRoute('GET', '/admin/books', 'BookController', 'adminBooks');
 $router->addRoute('GET', '/admin/books/add', 'BookController', 'addBook');
 $router->addRoute('POST', '/admin/books/add', 'BookController', 'addBook');
@@ -464,43 +665,169 @@ $router->addRoute('GET', '/admin/books/edit', 'BookController', 'editBook');
 $router->addRoute('POST', '/admin/books/edit', 'BookController', 'editBook');
 $router->addRoute('POST', '/admin/books/delete', 'BookController', 'deleteBook');
 
-// Public book browsing routes (accessible without login)
+// Admin Borrow Requests
+$router->addRoute('GET', '/admin/borrow-requests', 'AdminController', 'borrowRequests');
+$router->addRoute('POST', '/admin/borrow-requests/handle', 'AdminController', 'handleBorrowRequest');
+$router->addRoute('POST', '/admin/borrow-requests-handle', 'AdminController', 'handleBorrowRequest');
+
+// Admin Borrowed Books
+$router->addRoute('GET', '/admin/borrowed-books', 'AdminController', 'booksBorrowed');
+$router->addRoute('POST', '/admin/borrowed-books', 'AdminController', 'booksBorrowed');
+
+// Admin Fines
+$router->addRoute('GET', '/admin/fines', 'AdminController', 'fines');
+$router->addRoute('POST', '/admin/fines', 'AdminController', 'updateFines');
+
+// Admin Notifications
+$router->addRoute('GET', '/admin/notifications', 'AdminController', 'notifications');
+$router->addRoute('POST', '/admin/notifications/mark-read', 'AdminController', 'markNotificationRead');
+
+// Admin Reports & Analytics
+$router->addRoute('GET', '/admin/reports', 'AdminController', 'reports');
+$router->addRoute('GET', '/admin/reports/export', 'AdminController', 'exportReport');
+$router->addRoute('GET', '/admin/analytics', 'AdminController', 'analytics');
+
+// Admin Settings
+$router->addRoute('GET', '/admin/settings', 'AdminController', 'settings');
+$router->addRoute('POST', '/admin/settings', 'AdminController', 'updateSettings');
+
+// Admin Maintenance
+$router->addRoute('GET', '/admin/maintenance', 'AdminController', 'maintenance');
+$router->addRoute('POST', '/admin/maintenance', 'AdminController', 'performMaintenance');
+$router->addRoute('POST', '/admin/maintenance/perform', 'AdminController', 'performMaintenance');
+$router->addRoute('POST', '/admin/backup', 'AdminController', 'createBackup');
+$router->addRoute('POST', '/admin/maintenance/backup', 'AdminController', 'createBackup');
+
+// Admin Profile
+$router->addRoute('GET', '/admin/profile', 'AdminController', 'profile');
+$router->addRoute('POST', '/admin/profile', 'AdminController', 'profile');
+
+// ============================================================================
+// PUBLIC BOOK BROWSING ROUTES (accessible without login)
+// ============================================================================
+
 $router->addRoute('GET', '/books', 'BookController', 'userBooks');
 $router->addRoute('GET', '/books/search', 'BookController', 'searchBooks');
 
-// API routes
+// ============================================================================
+// API ROUTES
+// ============================================================================
+
 $router->addRoute('GET', '/api/books/search', 'BookController', 'searchBooks');
 $router->addRoute('GET', '/api/book/details', 'BookController', 'getBookDetails');
+$router->addRoute('POST', '/api/book/reserve', 'BookController', 'reserveBook');
 
-// Error handling routes
+// ============================================================================
+// ERROR & SYSTEM ROUTES
+// ============================================================================
+
 $router->addRoute('GET', '/403', 'AuthController', 'show403');
 $router->addRoute('GET', '/404', 'AuthController', 'show404');
+$router->addRoute('GET', '/500', 'AuthController', 'show500');
 
 // Health check and system routes
 $router->addRoute('GET', '/health', 'AuthController', 'healthCheck');
 $router->addRoute('GET', '/status', 'AuthController', 'systemStatus');
 
-// Debug routes (remove in production)
-$router->addRoute('GET', '/debug/video', 'HomeController', 'videoDebug');
 
-error_log("Routes registered, dispatching...");
 
-// Dispatch the request
+// ============================================================================
+// MIDDLEWARE (Optional - implement as needed)
+// ============================================================================
+
+// Example: Add authentication middleware
+// $router->addBeforeMiddleware(function() {
+//     // Check if user is authenticated for protected routes
+// });
+
+// ============================================================================
+// DISPATCH REQUEST
+// ============================================================================
+
+error_log("Routes registered (" . count($router->getRoutes()) . " total), dispatching...");
+
 try {
-  $router->dispatch();
+    $router->dispatch();
 } catch (\Exception $e) {
-  error_log("FATAL ERROR during dispatch: " . $e->getMessage());
-  error_log("Stack trace: " . $e->getTraceAsString());
+    error_log("FATAL ERROR during dispatch: " . $e->getMessage());
+    error_log("Stack trace: " . $e->getTraceAsString());
 
-  // Show error page
-  http_response_code(500);
-  echo "<!DOCTYPE html><html><head><title>Fatal Error</title></head><body>";
-  echo "<h1>Fatal Application Error</h1>";
-  echo "<p><strong>Message:</strong> " . htmlspecialchars($e->getMessage()) . "</p>";
-  echo "<p><strong>File:</strong> " . htmlspecialchars($e->getFile()) . "</p>";
-  echo "<p><strong>Line:</strong> " . $e->getLine() . "</p>";
-  echo "<pre>" . htmlspecialchars($e->getTraceAsString()) . "</pre>";
-  echo "</body></html>";
+    // Show error page
+    http_response_code(500);
+    ?>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Fatal Error</title>
+        <style>
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                line-height: 1.6;
+                color: #333;
+                max-width: 1200px;
+                margin: 50px auto;
+                padding: 20px;
+                background: #f5f5f5;
+            }
+            .error-box {
+                background: white;
+                border-radius: 8px;
+                padding: 30px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            }
+            h1 {
+                color: #d32f2f;
+                border-bottom: 2px solid #d32f2f;
+                padding-bottom: 10px;
+            }
+            .details {
+                background: #f8f9fa;
+                border-left: 4px solid #d32f2f;
+                padding: 15px;
+                margin: 20px 0;
+            }
+            pre {
+                background: #263238;
+                color: #aed581;
+                padding: 15px;
+                border-radius: 4px;
+                overflow-x: auto;
+            }
+            .btn {
+                display: inline-block;
+                padding: 10px 20px;
+                background: #007bff;
+                color: white;
+                text-decoration: none;
+                border-radius: 4px;
+                margin-top: 20px;
+            }
+            .btn:hover {
+                background: #0056b3;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="error-box">
+            <h1>🔴 Fatal Application Error</h1>
+            <div class="details">
+                <p><strong>Message:</strong> <?php echo htmlspecialchars($e->getMessage()); ?></p>
+                <p><strong>File:</strong> <?php echo htmlspecialchars($e->getFile()); ?></p>
+                <p><strong>Line:</strong> <?php echo $e->getLine(); ?></p>
+            </div>
+            
+            <?php if (ini_get('display_errors')): ?>
+            <h3>Stack Trace:</h3>
+            <pre><?php echo htmlspecialchars($e->getTraceAsString()); ?></pre>
+            <?php endif; ?>
+            
+            <a href="<?php echo BASE_URL; ?>" class="btn">← Return to Home</a>
+        </div>
+    </body>
+    </html>
+    <?php
 }
 
 error_log("=== Request Complete ===");

@@ -117,6 +117,7 @@
         /* Sidebar Navigation */
         .sidebar-nav {
             padding: 1rem 0;
+            padding-bottom: 180px; /* Add space for the footer */
         }
 
         .nav-section {
@@ -220,13 +221,20 @@
 
         /* Sidebar Footer */
         .sidebar-footer {
-            position: absolute;
+            position: fixed;
             bottom: 0;
             left: 0;
-            right: 0;
+            width: 280px;
             padding: 1.5rem;
             border-top: 1px solid rgba(255, 255, 255, 0.1);
-            background: rgba(0, 0, 0, 0.2);
+            background: rgba(15, 23, 42, 0.98);
+            backdrop-filter: blur(10px);
+            transition: all 0.3s ease;
+            z-index: 1001;
+        }
+
+        .sidebar.collapsed .sidebar-footer {
+            width: 80px;
         }
 
         .user-profile {
@@ -352,6 +360,10 @@
                 transform: translateX(0);
             }
 
+            .sidebar-footer {
+                width: 280px;
+            }
+
             /* Mobile Overlay */
             .mobile-overlay {
                 display: none;
@@ -395,8 +407,18 @@
     </style>
 </head>
 <body>
+    <?php
+    // Get current admin info
+    $adminName = $_SESSION['username'] ?? 'Admin';
+    $adminEmail = $_SESSION['emailId'] ?? '';
+    $adminInitial = strtoupper(substr($adminName, 0, 1));
+
+    // Get current page for active nav highlighting
+    $currentPage = basename($_SERVER['PHP_SELF'], '.php');
+    ?>
+
     <!-- Mobile Overlay -->
-    <div class="mobile-overlay" id="mobileOverlay" onclick="closeSidebar()"></div>
+    <div class="mobile-overlay" id="mobileOverlay" onclick="toggleMobileSidebar()"></div>
 
     <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
@@ -404,7 +426,7 @@
         <div class="sidebar-header">
             <div class="sidebar-logo">
                 <i class="fas fa-book-reader"></i>
-                <h2>Library</h2>
+                <h2>LibraryMS</h2>
             </div>
             <button class="sidebar-toggle" onclick="toggleSidebar()">
                 <i class="fas fa-bars"></i>
@@ -416,80 +438,135 @@
             <!-- Main Section -->
             <div class="nav-section">
                 <div class="nav-section-title">Main</div>
+                
                 <div class="nav-item">
-                    <a href="<?= BASE_URL ?>admin/dashboard" class="nav-link active" data-title="Dashboard">
-                        <i class="fas fa-home"></i>
+                    <a href="<?= BASE_URL ?>admin/dashboard" class="nav-link <?= $currentPage === 'dashboard' ? 'active' : '' ?>" data-title="Dashboard">
+                        <i class="fas fa-tachometer-alt"></i>
                         <span>Dashboard</span>
                     </a>
                 </div>
+                
                 <div class="nav-item">
-                    <a href="<?= BASE_URL ?>admin/analytics" class="nav-link" data-title="Analytics">
+                    <a href="<?= BASE_URL ?>admin/analytics" class="nav-link <?= $currentPage === 'analytics' ? 'active' : '' ?>" data-title="Analytics">
                         <i class="fas fa-chart-line"></i>
                         <span>Analytics</span>
                     </a>
                 </div>
             </div>
 
-            <!-- Management Section -->
+            <!-- Library Management Section -->
             <div class="nav-section">
-                <div class="nav-section-title">Management</div>
+                <div class="nav-section-title">Library Management</div>
+                
                 <div class="nav-item">
-                    <a href="<?= BASE_URL ?>admin/books" class="nav-link" data-title="Books">
+                    <a href="<?= BASE_URL ?>admin/books" class="nav-link <?= $currentPage === 'books' ? 'active' : '' ?>" data-title="Books">
                         <i class="fas fa-book"></i>
                         <span>Books</span>
                     </a>
                 </div>
+                
                 <div class="nav-item">
-                    <a href="<?= BASE_URL ?>admin/users" class="nav-link" data-title="Users">
-                        <i class="fas fa-users"></i>
-                        <span>Users</span>
+                    <a href="<?= BASE_URL ?>admin/borrowed-books" class="nav-link <?= $currentPage === 'borrowed-books' ? 'active' : '' ?>" data-title="Borrowed Books">
+                        <i class="fas fa-book-reader"></i>
+                        <span>Borrowed Books</span>
                     </a>
                 </div>
+                
                 <div class="nav-item">
-                    <a href="<?= BASE_URL ?>admin/borrow-requests" class="nav-link" data-title="Borrow Requests">
-                        <i class="fas fa-envelope-open-text"></i>
+                    <a href="<?= BASE_URL ?>admin/borrow-requests" class="nav-link <?= $currentPage === 'borrow-requests' ? 'active' : '' ?>" data-title="Borrow Requests">
+                        <i class="fas fa-hand-paper"></i>
                         <span>Borrow Requests</span>
-                        <?php if (isset($pendingRequests) && $pendingRequests > 0): ?>
-                            <span class="nav-badge"><?= $pendingRequests ?></span>
+                        <?php
+                        // Get pending requests count
+                        global $mysqli;
+                        $pendingCount = 0;
+                        if (isset($mysqli)) {
+                            $result = $mysqli->query("SELECT COUNT(*) as count FROM borrow_requests WHERE status = 'Pending'");
+                            if ($result) {
+                                $pendingCount = $result->fetch_assoc()['count'];
+                            }
+                        }
+                        if ($pendingCount > 0):
+                        ?>
+                            <span class="nav-badge"><?= $pendingCount ?></span>
                         <?php endif; ?>
-                    </a>
-                </div>
-                <div class="nav-item">
-                    <a href="<?= BASE_URL ?>admin/fines" class="nav-link" data-title="Fines">
-                        <i class="fas fa-money-bill-wave"></i>
-                        <span>Fines</span>
                     </a>
                 </div>
             </div>
 
-            <!-- System Section -->
+            <!-- User Management Section -->
+            <div class="nav-section">
+                <div class="nav-section-title">User Management</div>
+                
+                <div class="nav-item">
+                    <a href="<?= BASE_URL ?>admin/users" class="nav-link <?= $currentPage === 'users' ? 'active' : '' ?>" data-title="Users">
+                        <i class="fas fa-users"></i>
+                        <span>Users</span>
+                    </a>
+                </div>
+            </div>
+
+            <!-- Financial Section -->
+            <div class="nav-section">
+                <div class="nav-section-title">Financial</div>
+                
+                <div class="nav-item">
+                    <a href="<?= BASE_URL ?>admin/fines" class="nav-link <?= $currentPage === 'fines' ? 'active' : '' ?>" data-title="Fines">
+                        <i class="fas fa-dollar-sign"></i>
+                        <span>Fines</span>
+                        <?php
+                        // Get pending fines count
+                        $pendingFines = 0;
+                        if (isset($mysqli)) {
+                            $result = $mysqli->query("SELECT COUNT(*) as count FROM transactions WHERE fineAmount > 0 AND fineStatus = 'pending'");
+                            if ($result) {
+                                $pendingFines = $result->fetch_assoc()['count'];
+                            }
+                        }
+                        if ($pendingFines > 0):
+                        ?>
+                            <span class="nav-badge"><?= $pendingFines ?></span>
+                        <?php endif; ?>
+                    </a>
+                </div>
+            </div>
+
+            <!-- Reports & Settings Section -->
             <div class="nav-section">
                 <div class="nav-section-title">System</div>
+                
                 <div class="nav-item">
-                    <a href="<?= BASE_URL ?>admin/reports" class="nav-link" data-title="Reports">
+                    <a href="<?= BASE_URL ?>admin/reports" class="nav-link <?= $currentPage === 'reports' ? 'active' : '' ?>" data-title="Reports">
                         <i class="fas fa-chart-bar"></i>
                         <span>Reports</span>
                     </a>
                 </div>
+                
                 <div class="nav-item">
-                    <a href="<?= BASE_URL ?>admin/notifications" class="nav-link" data-title="Notifications">
+                    <a href="<?= BASE_URL ?>admin/notifications" class="nav-link <?= $currentPage === 'notifications' ? 'active' : '' ?>" data-title="Notifications">
                         <i class="fas fa-bell"></i>
                         <span>Notifications</span>
-                        <?php if (!empty($notifications) && count(array_filter($notifications, fn($n) => !$n['isRead'])) > 0): ?>
-                            <span class="nav-badge"><?= count(array_filter($notifications, fn($n) => !$n['isRead'])) ?></span>
+                        <?php
+                        // Get unread notifications count
+                        $unreadCount = 0;
+                        if (isset($mysqli)) {
+                            $adminId = $_SESSION['userId'] ?? '';
+                            $result = $mysqli->query("SELECT COUNT(*) as count FROM notifications WHERE isRead = 0 AND (userId = '$adminId' OR userId IS NULL)");
+                            if ($result) {
+                                $unreadCount = $result->fetch_assoc()['count'];
+                            }
+                        }
+                        if ($unreadCount > 0):
+                        ?>
+                            <span class="nav-badge"><?= $unreadCount ?></span>
                         <?php endif; ?>
                     </a>
                 </div>
+                
                 <div class="nav-item">
-                    <a href="<?= BASE_URL ?>admin/maintenance" class="nav-link" data-title="Maintenance">
+                    <a href="<?= BASE_URL ?>admin/maintenance" class="nav-link <?= $currentPage === 'maintenance' ? 'active' : '' ?>" data-title="Maintenance">
                         <i class="fas fa-tools"></i>
                         <span>Maintenance</span>
-                    </a>
-                </div>
-                <div class="nav-item">
-                    <a href="<?= BASE_URL ?>admin/settings" class="nav-link" data-title="Settings">
-                        <i class="fas fa-cog"></i>
-                        <span>Settings</span>
                     </a>
                 </div>
             </div>
@@ -497,24 +574,15 @@
 
         <!-- Sidebar Footer -->
         <div class="sidebar-footer">
-            <div class="user-profile">
-                <a href="<?= BASE_URL ?>admin/profile" class="user-avatar" title="View Profile">
-                    <?php 
-                    $adminName = $_SESSION['userName'] ?? 'Admin';
-                    $profileImage = $_SESSION['profileImage'] ?? ''; // Get profile image from session
-                    
-                    if (!empty($profileImage) && file_exists($profileImage)): 
-                    ?>
-                        <img src="<?= htmlspecialchars($profileImage) ?>" alt="Profile">
-                    <?php else: ?>
-                        <?= strtoupper(substr($adminName, 0, 1)) ?>
-                    <?php endif; ?>
-                </a>
-                <div class="user-info">
-                    <div class="user-name"><?= htmlspecialchars($adminName) ?></div>
-                    <div class="user-role">Administrator</div>
+            <a href="<?= BASE_URL ?>admin/profile" style="text-decoration:none;">
+                <div class="user-profile">
+                    <div class="user-avatar"><?= $adminInitial ?></div>
+                    <div class="user-info">
+                        <div class="user-name"><?= htmlspecialchars($adminName) ?></div>
+                        <div class="user-role">Administrator</div>
+                    </div>
                 </div>
-            </div>
+            </a>
             <a href="<?= BASE_URL ?>logout" class="logout-btn">
                 <i class="fas fa-sign-out-alt"></i>
                 <span>Logout</span>
